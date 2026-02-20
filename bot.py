@@ -1,125 +1,117 @@
-import os, time, random, asyncio, json, traceback
+import os, re, time, json, asyncio, random
 import httpx
+from bs4 import BeautifulSoup
+from urllib.parse import quote_plus
 from telegram import Bot
-from aiohttp import web
 
+# =======================
+# VARIÁVEIS (Railway)
+# =======================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
+
 INTERVALO_SEG = int(os.getenv("INTERVALO_SEG", "300"))
 
+if not BOT_TOKEN:
+    raise RuntimeError("Faltou BOT_TOKEN")
+if not CHAT_ID:
+    raise RuntimeError("Faltou CHAT_ID")
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 RadarOfertasBot/3.0",
+}
+
 KEYWORDS = [
-    "air fryer","liquidificador","cafeteira","panela eletrica",
-    "mop giratorio","aspirador","organizador",
-    "lampada led","fone bluetooth","caixa bluetooth",
-    "smartwatch","carregador turbo","power bank",
-    "mouse gamer","teclado gamer",
-    "fralda bebe","lenço umedecido",
-    "secador cabelo","chapinha",
-    "parafusadeira","furadeira",
-    "suporte celular carro"
+    "air fryer","fone bluetooth","smartwatch","robo aspirador","mop giratorio",
+    "liquidificador","cafeteira","panela eletrica","lampada led","fita led",
+    "caixa de som bluetooth","carregador turbo","power bank","ring light",
+    "mouse gamer","teclado gamer","roteador wifi","camera wifi",
+    "fralda bebe","lenço umedecido","mamadeira","secador cabelo",
+    "barbeador eletrico","halter","corda pular","parafusadeira",
+    "furadeira","kit ferramentas","lanterna led","suporte celular carro"
 ]
 
-CACHE_FILE = "sent.json"
+CACHE_FILE = "sent_cache.json"
 
 def load_cache():
     try:
-        with open(CACHE_FILE,"r") as f:
+        with open(CACHE_FILE, "r") as f:
             return json.load(f)
     except:
-        return {"sent":{}}
+        return {"sent": {}}
 
 def save_cache(data):
-    try:
-        with open(CACHE_FILE,"w") as f:
-            json.dump(data,f)
-    except:
-        pass
+    with open(CACHE_FILE, "w") as f:
+        json.dump(data, f)
 
+def extract_item_id(url):
+    m = re.search(r"(MLB-?\d+)", url.upper())
+    return m.group(1).replace("-", "") if m else None
 
-async def buscar_oferta():
-    kw = random.choice(KEYWORDS)
-    url = f"https://api.mercadolibre.com/sites/MLB/search?q={kw}&sort=price_asc&limit=20"
-
-    async with httpx.AsyncClient(timeout=30) as client:
+async def fetch_listing(keyword):
+    url = f"https://lista.mercadolivre.com.br/{quote_plus(keyword)}"
+    async with httpx.AsyncClient(headers=HEADERS, timeout=30) as client:
         r = await client.get(url)
-        data = r.json()
+        soup = BeautifulSoup(r.text, "lxml")
 
-    if not data.get("results"):
-        return None
+    items = []
+    for card in soup.select("li.ui-search-layout__item")[:10]:
+        title = card.select_one("h2.ui-search-item__title")
+        link = card.select_one("a.ui-search-link")
+        price = card.select_one("span.andes-money-amount__fraction")
 
-    prod = random.choice(data["results"])
+        if not (title and link and price):
+            continue
 
-    titulo = prod.get("title")
-    preco = prod.get("price")
-    link = prod.get("permalink")
-    seller = prod.get("seller", {}).get("nickname","Vendedor")
+        items.append({
+            "title": title.get_text(strip=True),
+            "link": link.get("href"),
+            "price": price.get_text(strip=True),
+            "id": extract_item_id(link.get("href"))
+        })
+    return items
 
-    msg = f"""
-🔥 OFERTA ENCONTRADA 🔥
-
-📦 {titulo}
-💰 R$ {preco}
-🛡️ {seller}
-
-🛒 COLOQUE SEU LINK AFILIADO
-🔗 {link}
-
-⚡ Estoque pode acabar!
-"""
-    return msg, link
-
-
-async def loop_bot(bot):
-    cache = load_cache()
-    sent = cache["sent"]
-
-    while True:
-        try:
-            oferta = await buscar_oferta()
-
-            if oferta:
-                msg, link = oferta
-
-                if link not in sent:
-                    await bot.send_message(chat_id=CHAT_ID, text=msg)
-                    sent[link] = time.time()
-                    save_cache(cache)
-                    print("Oferta enviada")
-
-        except Exception:
-            print("ERRO:")
-            traceback.print_exc()
-
-        await asyncio.sleep(INTERVALO_SEG)
-
-
-# ================= KEEP ALIVE =================
-
-async def handle(request):
-    return web.Response(text="Bot online")
-
-async def start_web():
-    app = web.Application()
-    app.router.add_get("/", handle)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.environ.get("PORT", 8080))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    print("Servidor HTTP ativo na porta", port)
-
-
-# ================= MAIN =================
+def make_msg(p):
+    return (
+        "🔥 OFERTA ENCONTRADA 🔥\n\n"
+        f"📦 {p['title']}\n"
+        f"💰 R$ {p['price']}\n\n"
+        "🛒 Comprar:\n"
+        "SEU_LINK_AFILIADO_AQUI\n\n"
+        f"🔗 {p['link']}"
+    )
 
 async def main():
     bot = Bot(token=BOT_TOKEN)
+    await bot.send_message(chat_id=CHAT_ID, text="✅ Bot online — enviando ofertas automaticamente.")
 
-    await bot.send_message(chat_id=CHAT_ID, text="✅ Bot online — modo 24h ativo.")
+    cache = load_cache()
+    sent = cache.get("sent", {})
 
-    await start_web()
+    while True:
+        try:
+            keyword = random.choice(KEYWORDS)
+            items = await fetch_listing(keyword)
 
-    await loop_bot(bot)
+            for it in items:
+                uid = it["id"] or it["link"]
+                if uid in sent:
+                    continue
 
+                msg = make_msg(it)
+                await bot.send_message(chat_id=CHAT_ID, text=msg)
+
+                sent[uid] = time.time()
+                cache["sent"] = sent
+                save_cache(cache)
+                break
+
+            print("Ciclo ok")
+
+        except Exception as e:
+            print("ERRO:", e)
+
+        await asyncio.sleep(INTERVALO_SEG)
 
 if __name__ == "__main__":
     asyncio.run(main())
