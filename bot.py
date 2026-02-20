@@ -1,4 +1,4 @@
-import os, time, random, asyncio, json
+import os, time, random, asyncio, json, traceback
 import httpx
 from telegram import Bot
 
@@ -68,10 +68,7 @@ async def buscar_oferta():
     return msg, link
 
 
-async def main():
-    bot = Bot(token=BOT_TOKEN)
-    await bot.send_message(chat_id=CHAT_ID, text="✅ Bot online — API oficial ativa.")
-
+async def loop_principal(bot):
     cache = load_cache()
     sent = cache["sent"]
 
@@ -90,10 +87,24 @@ async def main():
                 else:
                     print("Repetida ignorada")
 
-        except Exception as e:
-            print("Erro:", e)
+        except Exception:
+            print("ERRO:")
+            traceback.print_exc()
 
         await asyncio.sleep(INTERVALO_SEG)
+
+
+async def main():
+    bot = Bot(token=BOT_TOKEN)
+    await bot.send_message(chat_id=CHAT_ID, text="✅ Bot online — sistema estável ativo.")
+
+    while True:
+        try:
+            await loop_principal(bot)
+        except Exception:
+            print("Loop reiniciado após erro")
+            traceback.print_exc()
+            await asyncio.sleep(10)
 
 
 if __name__ == "__main__":
