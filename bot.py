@@ -1,125 +1,100 @@
-import os, re, time, json, asyncio, random
+import os, time, random, asyncio, json
 import httpx
-from bs4 import BeautifulSoup
-from urllib.parse import quote_plus
 from telegram import Bot
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 INTERVALO_SEG = int(os.getenv("INTERVALO_SEG", "300"))
-TERMS_PER_CYCLE = int(os.getenv("TERMS_PER_CYCLE", "6"))
-RESULTS_TO_SCAN = int(os.getenv("RESULTS_TO_SCAN", "12"))
-MAX_SEND_PER_CYCLE = int(os.getenv("MAX_SEND_PER_CYCLE", "1"))
-INTERNAL_DELAY_SEC = float(os.getenv("INTERNAL_DELAY_SEC", "0.8"))
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0",
-    "Accept-Language": "pt-BR,pt;q=0.9"
-}
 
 KEYWORDS = [
-    "air fryer","liquidificador","cafeteira","panela eletrica","kit cozinha",
-    "mop giratorio","aspirador","organizador","lampada led","fita led",
-    "fone bluetooth","caixa bluetooth","smartwatch","carregador turbo","power bank",
-    "mouse gamer","teclado gamer","headset gamer",
+    "air fryer","liquidificador","cafeteira","panela eletrica",
+    "mop giratorio","aspirador","organizador",
+    "lampada led","fone bluetooth","caixa bluetooth",
+    "smartwatch","carregador turbo","power bank",
+    "mouse gamer","teclado gamer",
     "fralda bebe","lenço umedecido",
-    "secador cabelo","chapinha","barbeador",
-    "halter","tapete yoga",
+    "secador cabelo","chapinha",
     "parafusadeira","furadeira",
     "suporte celular carro"
 ]
 
-CACHE_FILE = "sent_cache.json"
+CACHE_FILE = "sent.json"
 
 def load_cache():
     try:
-        with open(CACHE_FILE, "r") as f:
+        with open(CACHE_FILE,"r") as f:
             return json.load(f)
     except:
-        return {"sent": {}}
+        return {"sent":{}}
 
 def save_cache(data):
     try:
-        with open(CACHE_FILE, "w") as f:
-            json.dump(data, f)
+        with open(CACHE_FILE,"w") as f:
+            json.dump(data,f)
     except:
         pass
 
-def extract_item_id(url):
-    m = re.search(r"(MLB-?\d+)", url.upper())
-    return m.group(1).replace("-", "") if m else None
 
-async def fetch_listing(keyword):
-    url = f"https://lista.mercadolivre.com.br/{quote_plus(keyword)}"
-    async with httpx.AsyncClient(headers=HEADERS, timeout=30) as client:
+async def buscar_oferta():
+    kw = random.choice(KEYWORDS)
+    url = f"https://api.mercadolibre.com/sites/MLB/search?q={kw}&sort=price_asc&limit=20"
+
+    async with httpx.AsyncClient(timeout=30) as client:
         r = await client.get(url)
-    soup = BeautifulSoup(r.text, "lxml")
-    cards = soup.select("li.ui-search-layout__item")[:RESULTS_TO_SCAN]
+        data = r.json()
 
-    items = []
-    for c in cards:
-        t = c.select_one("h2")
-        a = c.select_one("a.ui-search-link")
-        p = c.select_one("span.andes-money-amount__fraction")
-        if not (t and a and p): continue
-        txt = c.get_text(" ", strip=True).lower()
-        items.append({
-            "title": t.get_text(strip=True),
-            "link": a.get("href"),
-            "price": p.get_text(strip=True),
-            "coupon": "cupom" in txt,
-            "frete": "frete grátis" in txt,
-            "id": extract_item_id(a.get("href"))
-        })
-    return items
+    if not data.get("results"):
+        return None
 
-def make_msg(p):
-    cupom = "\n🎟️ POSSÍVEL CUPOM NO ANÚNCIO" if p["coupon"] else ""
-    frete = "\n🚚 POSSÍVEL FRETE GRÁTIS" if p["frete"] else ""
-    return f"""🔥 OFERTA ENCONTRADA 🔥
+    prod = random.choice(data["results"])
 
-📦 {p['title']}
-💰 R$ {p['price']}{cupom}{frete}
+    titulo = prod.get("title")
+    preco = prod.get("price")
+    link = prod.get("permalink")
+    seller = prod.get("seller", {}).get("nickname","Vendedor")
+
+    msg = f"""
+🔥 OFERTA ENCONTRADA 🔥
+
+📦 {titulo}
+💰 R$ {preco}
+🛡️ {seller}
 
 🛒 Coloque seu link de afiliado aqui
-🔗 {p['link']}
+🔗 {link}
 
 ⚡ Estoque pode acabar!
 """
+    return msg, link
+
 
 async def main():
     bot = Bot(token=BOT_TOKEN)
-    await bot.send_message(chat_id=CHAT_ID, text="✅ Bot online — enviando ofertas automaticamente.")
+    await bot.send_message(chat_id=CHAT_ID, text="✅ Bot online — API oficial ativa.")
 
     cache = load_cache()
     sent = cache["sent"]
 
     while True:
         try:
-            sent_cycle = 0
-            for kw in random.sample(KEYWORDS, k=min(TERMS_PER_CYCLE, len(KEYWORDS))):
-                if sent_cycle >= MAX_SEND_PER_CYCLE:
-                    break
+            oferta = await buscar_oferta()
 
-                items = await fetch_listing(kw)
-                for it in items:
-                    uid = it["id"] or it["link"]
-                    if uid in sent:
-                        continue
+            if oferta:
+                msg, link = oferta
 
-                    await bot.send_message(chat_id=CHAT_ID, text=make_msg(it))
-                    sent[uid] = time.time()
+                if link not in sent:
+                    await bot.send_message(chat_id=CHAT_ID, text=msg)
+                    sent[link] = time.time()
                     save_cache(cache)
-                    sent_cycle += 1
-                    break
+                    print("Oferta enviada")
+                else:
+                    print("Repetida ignorada")
 
-                await asyncio.sleep(INTERNAL_DELAY_SEC)
-
-            print(f"Ciclo ok | enviadas: {sent_cycle}")
         except Exception as e:
             print("Erro:", e)
 
         await asyncio.sleep(INTERVALO_SEG)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
