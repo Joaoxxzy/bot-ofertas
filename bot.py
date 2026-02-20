@@ -1,6 +1,7 @@
 import os, time, random, asyncio, json, traceback
 import httpx
 from telegram import Bot
+from aiohttp import web
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -60,7 +61,7 @@ async def buscar_oferta():
 💰 R$ {preco}
 🛡️ {seller}
 
-🛒 Coloque seu link de afiliado aqui
+🛒 COLOQUE SEU LINK AFILIADO
 🔗 {link}
 
 ⚡ Estoque pode acabar!
@@ -68,7 +69,7 @@ async def buscar_oferta():
     return msg, link
 
 
-async def loop_principal(bot):
+async def loop_bot(bot):
     cache = load_cache()
     sent = cache["sent"]
 
@@ -84,8 +85,6 @@ async def loop_principal(bot):
                     sent[link] = time.time()
                     save_cache(cache)
                     print("Oferta enviada")
-                else:
-                    print("Repetida ignorada")
 
         except Exception:
             print("ERRO:")
@@ -94,17 +93,32 @@ async def loop_principal(bot):
         await asyncio.sleep(INTERVALO_SEG)
 
 
+# ================= KEEP ALIVE =================
+
+async def handle(request):
+    return web.Response(text="Bot online")
+
+async def start_web():
+    app = web.Application()
+    app.router.add_get("/", handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    print("Servidor HTTP ativo na porta", port)
+
+
+# ================= MAIN =================
+
 async def main():
     bot = Bot(token=BOT_TOKEN)
-    await bot.send_message(chat_id=CHAT_ID, text="✅ Bot online — sistema estável ativo.")
 
-    while True:
-        try:
-            await loop_principal(bot)
-        except Exception:
-            print("Loop reiniciado após erro")
-            traceback.print_exc()
-            await asyncio.sleep(10)
+    await bot.send_message(chat_id=CHAT_ID, text="✅ Bot online — modo 24h ativo.")
+
+    await start_web()
+
+    await loop_bot(bot)
 
 
 if __name__ == "__main__":
